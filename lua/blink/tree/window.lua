@@ -2,6 +2,28 @@ local api = vim.api
 
 local Window = {}
 
+function Window:hide_cursor()
+  if self.prev_cursor ~= nil then return end
+
+  self.prev_cursor = api.nvim_get_option_value('guicursor', {})
+  api.nvim_set_option_value('guicursor', 'n:block-Cursor', {})
+
+  local cursor_hl = api.nvim_get_hl(0, { name = 'Cursor' })
+  self.prev_cursor_blend = cursor_hl.blend
+  api.nvim_set_hl(0, 'Cursor', vim.tbl_extend('force', cursor_hl, { blend = 100 }))
+end
+
+function Window:restore_cursor()
+  if self.prev_cursor == nil then return end
+
+  api.nvim_set_option_value('guicursor', self.prev_cursor, {})
+  self.prev_cursor = nil
+
+  local cursor_hl = api.nvim_get_hl(0, { name = 'Cursor' })
+  api.nvim_set_hl(0, 'Cursor', vim.tbl_extend('force', cursor_hl, { blend = self.prev_cursor_blend or 0 }))
+  self.prev_cursor_blend = nil
+end
+
 function Window.new()
   local self = setmetatable({}, { __index = Window })
   self.winnr = -1
@@ -13,6 +35,7 @@ function Window.new()
   api.nvim_create_autocmd('VimLeavePre', {
     group = self.augroup,
     callback = function()
+      self:restore_cursor()
       if self.tree ~= nil then
         self.tree:destroy()
         self.tree = nil
@@ -26,7 +49,14 @@ function Window.new()
       local current_win = api.nvim_get_current_win()
       if current_win == self.winnr then
         api.nvim_feedkeys(api.nvim_replace_termcodes('<Esc>', true, false, true), 'n', false)
+        self:hide_cursor()
       end
+    end,
+  })
+  api.nvim_create_autocmd('WinLeave', {
+    group = self.augroup,
+    callback = function()
+      if api.nvim_get_current_win() == self.winnr then self:restore_cursor() end
     end,
   })
   -- only allow the cursor to be on the first column which will always be empty
@@ -52,74 +82,6 @@ function Window.new()
     end,
   })
 
-  -- set buffer options
-  api.nvim_create_autocmd('BufEnter', {
-    group = self.augroup,
-    callback = function()
-      if vim.bo.filetype ~= 'blink-tree' then return end
-
-      -- set local window options
-      vim.cmd('setlocal winfixwidth')
-      vim.cmd('setlocal cursorline')
-      vim.cmd('setlocal cursorlineopt=line')
-      vim.cmd('setlocal signcolumn=no')
-      vim.cmd('setlocal nowrap')
-      vim.cmd('setlocal nolist nospell nonumber norelativenumber')
-      vim.cmd(
-        'setlocal winhighlight=Normal:BlinkTreeNormal,NormalNC:BlinkTreeNormalNC,SignColumn:BlinkTreeSignColumn,CursorLine:BlinkTreeCursorLine,FloatBorder:BlinkTreeFloatBorder,StatusLine:BlinkTreeStatusLine,StatusLineNC:BlinkTreeStatusLineNC,VertSplit:BlinkTreeVertSplit,EndOfBuffer:BlinkTreeEndOfBuffer'
-      )
-    end,
-  })
-
-  -- hide the cursor when window is focused
-  -- todo: should use winenter and winleave instead?
-  local prev_cursor
-  local prev_blend
-  api.nvim_create_autocmd('BufEnter', {
-    group = self.augroup,
-    callback = function()
-      if vim.bo.filetype == 'blink-tree' and prev_cursor == nil then
-        prev_cursor = api.nvim_get_option_value('guicursor', {})
-        api.nvim_set_option_value('guicursor', 'n:block-Cursor', {})
-
-        local cursor_hl = api.nvim_get_hl(0, { name = 'Cursor' })
-        prev_blend = cursor_hl.blend
-        api.nvim_set_hl(0, 'Cursor', vim.tbl_extend('force', cursor_hl, { blend = 100 }))
-      end
-    end,
-  })
-  api.nvim_create_autocmd('BufLeave', {
-    group = self.augroup,
-    callback = function()
-      if prev_cursor ~= nil then
-        api.nvim_set_option_value('guicursor', prev_cursor, {})
-        prev_cursor = nil
-
-        local cursor_hl = api.nvim_get_hl(0, { name = 'Cursor' })
-        api.nvim_set_hl(0, 'Cursor', vim.tbl_extend('force', cursor_hl, { blend = prev_blend or 0 }))
-        prev_blend = nil
-      end
-    end,
-  })
-
-  -- prevent buffer from being changed
-  -- api.nvim_create_autocmd('BufEnter', {
-  --   callback = function()
-  --     -- ignore if not in tree window
-  --     if self.winnr ~= api.nvim_get_current_win() or not api.nvim_win_is_valid(self.winnr) then return end
-  --     if self.bufnr == api.nvim_get_current_buf() or not api.nvim_buf_is_valid(self.bufnr) then return end
-  --     local bufnr = api.nvim_get_current_buf()
-  --
-  --     -- restore tree buffer to tree window
-  --     api.nvim_win_set_buf(self.winnr, self.bufnr)
-  --
-  --     -- move new buffer to a non-tree window
-  --     local winnr = require('blink.tree.lib.utils').pick_or_create_non_special_window()
-  --     api.nvim_set_current_win(winnr)
-  --     api.nvim_win_set_buf(winnr, bufnr)
-  --   end,
-  -- })
-
   return self
 end
 
@@ -143,6 +105,24 @@ function Window:ensure_buffer()
   require('blink.tree.binds').attach_to_instance(self)
 end
 
+function Window:configure_window()
+  api.nvim_set_option_value('winfixbuf', true, { win = self.winnr })
+  api.nvim_set_option_value('winfixwidth', true, { win = self.winnr })
+  api.nvim_set_option_value('cursorline', true, { win = self.winnr })
+  api.nvim_set_option_value('cursorlineopt', 'line', { win = self.winnr })
+  api.nvim_set_option_value('signcolumn', 'no', { win = self.winnr })
+  api.nvim_set_option_value('wrap', false, { win = self.winnr })
+  api.nvim_set_option_value('list', false, { win = self.winnr })
+  api.nvim_set_option_value('spell', false, { win = self.winnr })
+  api.nvim_set_option_value('number', false, { win = self.winnr })
+  api.nvim_set_option_value('relativenumber', false, { win = self.winnr })
+  api.nvim_set_option_value(
+    'winhighlight',
+    'Normal:BlinkTreeNormal,NormalNC:BlinkTreeNormalNC,SignColumn:BlinkTreeSignColumn,CursorLine:BlinkTreeCursorLine,FloatBorder:BlinkTreeFloatBorder,StatusLine:BlinkTreeStatusLine,StatusLineNC:BlinkTreeStatusLineNC,VertSplit:BlinkTreeVertSplit,EndOfBuffer:BlinkTreeEndOfBuffer',
+    { win = self.winnr }
+  )
+end
+
 function Window:render(callback)
   vim.schedule(function()
     if not self:is_open() then return end
@@ -158,25 +138,15 @@ function Window:open(silent, callback)
     return
   end
 
-  self.winnr = api.nvim_open_win(self.bufnr, not silent, {
+  self.winnr = api.nvim_open_win(self.bufnr, false, {
     win = -1,
     vertical = true,
     split = 'left',
     width = 40,
   })
+  self:configure_window()
 
-  -- HACK: we manually trigger this because neovim-session disable autocmds
-  -- during startup
-  -- todo: only force the autocmds if autocmds are disabled
-  local prev_win = vim.api.nvim_get_current_win()
-  if silent then vim.api.nvim_set_current_win(self.winnr) end
-  vim.cmd('do BufEnter')
-  if silent then
-    vim.schedule(function()
-      vim.cmd('do BufLeave')
-      vim.api.nvim_set_current_win(prev_win)
-    end)
-  end
+  if not silent then api.nvim_set_current_win(self.winnr) end
 
   self:render(callback)
 end
@@ -184,8 +154,24 @@ end
 function Window:close()
   if not self:is_open() then return end
 
-  -- if we're the last window, just replace the current buffer with a new buffer
-  if api.nvim_tabpage_list_wins(0)[1] == self.winnr and #api.nvim_list_wins() == 1 then return vim.cmd('enew') end
+  self:restore_cursor()
+
+  local normal_window_count = 0
+  for _, winnr in ipairs(api.nvim_list_wins()) do
+    local config = api.nvim_win_get_config(winnr)
+    if config.relative == '' and not config.external and not config.hide then
+      normal_window_count = normal_window_count + 1
+    end
+  end
+
+  -- floats and external windows cannot keep neovim open when the last normal window closes
+  if normal_window_count == 1 then
+    api.nvim_set_option_value('winfixbuf', false, { win = self.winnr })
+    api.nvim_win_set_buf(self.winnr, api.nvim_create_buf(true, false))
+    api.nvim_buf_delete(self.bufnr, { force = true })
+    self.winnr = -1
+    return
+  end
 
   -- otherwise close the window
   -- todo: destroy renderer?
